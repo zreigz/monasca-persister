@@ -31,6 +31,10 @@ import time
 from monasca_common.simport import simport
 from oslo_config import cfg
 from oslo_log import log
+from prometheus_client import core
+from prometheus_client import multiprocess
+from prometheus_client import start_wsgi_server
+from prometheus_client import CollectorRegistry
 
 from monasca_persister import config
 from monasca_persister.repositories import persister
@@ -90,6 +94,7 @@ def clean_exit(signum, frame=None):
 
 
 def start_process(respository, kafka_config):
+    core._ValueClass = core._MultiProcessValue()
     LOG.info("start process: {}".format(respository))
     m_persister = persister.Persister(kafka_config, cfg.CONF.zookeeper,
                                       respository)
@@ -102,6 +107,23 @@ def prepare_processes(conf, repo_driver):
         for proc in range(0, conf.num_processors):
             processors.append(multiprocessing.Process(
                 target=start_process, args=(repository, conf)))
+
+def prepare_prometheus(port, multiproc_dir):
+    LOG.info('Init Prometheus')
+    # Set environment variable "prometheus_multiproc_dir"
+    if multiproc_dir:
+        LOG.info('Set prometheus_multiproc_dir for: %s', multiproc_dir)
+        os.environ['prometheus_multiproc_dir'] = multiproc_dir
+    else:
+        LOG.exception(
+            'prometheus_multiproc_dir environment variable must be '
+            'set to a directory that the prometheus client library '
+            'can use for metrics')
+    # Create registry for prometheus client multiprocess
+    registry = CollectorRegistry()
+    multiprocess.MultiProcessCollector(registry)
+    start_wsgi_server(port=port, registry=registry)
+
 
 def main():
     """Start persister."""
@@ -120,6 +142,10 @@ def main():
     if cfg.CONF.kafka_events.enabled:
         prepare_processes(cfg.CONF.kafka_events,
                           cfg.CONF.repositories.events_driver)
+
+    if cfg.CONF.prometheus.enabled:
+        prepare_prometheus(cfg.CONF.prometheus.port,
+                           cfg.CONF.prometheus.multiproc_dir)
 
     # Start
     try:

@@ -14,10 +14,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import os
-
-from oslo_log import log
+import time
 
 from monasca_common.kafka import consumer
+from oslo_log import log
+from prometheus_client import multiprocess
+
+from prometheus_client import CollectorRegistry
+from prometheus_client import Counter
+from prometheus_client import Gauge
 
 LOG = log.getLogger(__name__)
 
@@ -43,17 +48,40 @@ class Persister(object):
             commit_timeout=kafka_conf.max_wait_time_seconds)
 
         self.repository = repository()
+        self._start_time = time.time()
+        self._end_time = 0
+        self.registry = CollectorRegistry()
+        multiprocess.MultiProcessCollector(self.registry)
+        self.message_counter = Counter('monasca_persister_message_count_total',
+                                       'total count of messages', ['version'])
+        self.message_counter.labels(version='v1.0')
+        self.message_counter_per_topic = Counter(
+            'monasca_persister_message_count_per_topic',
+            'total number of messages processed from one topic', ['topic'])
+        self.message_process_rate_gauge = Gauge(
+            'monasca_persister_messages_processed_per_sec',
+            'messages processed per second from one topic', ['topic'],
+            multiprocess_mode='all')
 
     def _flush(self):
         if not self._data_points:
             return
 
         try:
-            self.repository.write_batch(self._data_points)
-
+            self.repository.write_batch(self._data_points, self._kafka_topic)
+            self._end_time = time.time()
             LOG.info("Processed {} messages from topic '{}'".format(
                 len(self._data_points), self._kafka_topic))
 
+            self.message_counter.labels(version='v1.0').inc(
+                amount=len(self._data_points))
+            self.message_counter_per_topic.labels(topic=self._kafka_topic).inc(
+                amount=len(self._data_points))
+            self.message_process_rate_gauge.labels(
+                topic=self._kafka_topic).set(
+                len(self._data_points) / (self._end_time - self._start_time))
+
+            self._start_time = self._end_time
             self._data_points = []
             self._consumer.commit()
         except Exception as ex:

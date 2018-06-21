@@ -27,5 +27,5 @@ class AbstractRepository(object):
         pass
 
     @abc.abstractmethod
-    def write_batch(self, data_points):
+    def write_batch(self, data_points, kafka_topic):
         pass

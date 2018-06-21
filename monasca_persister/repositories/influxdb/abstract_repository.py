@@ -16,8 +16,12 @@ import abc
 import influxdb
 from oslo_config import cfg
 import six
+import time
 
 from monasca_persister.repositories import abstract_repository
+from prometheus_client import CollectorRegistry
+from prometheus_client import Gauge
+from prometheus_client import multiprocess
 
 
 @six.add_metaclass(abc.ABCMeta)
@@ -32,6 +36,18 @@ class AbstractInfluxdbRepository(abstract_repository.AbstractRepository):
             self.conf.influxdb.user,
             self.conf.influxdb.password,
             self.conf.influxdb.database_name)
+        self.registry = CollectorRegistry()
+        multiprocess.MultiProcessCollector(self.registry)
+        self.influxdb_write_time_per_message = Gauge(
+            'influxdb_write_latency_per_message',
+            'seconds per message for influxdb to write', ['topic'],
+            multiprocess_mode='all')
+        self._start_time = 0
+        self._end_time = 0
 
-    def write_batch(self, data_points):
+    def write_batch(self, data_points, kafka_topic):
+        self._start_time = time.time()
         self._influxdb_client.write_points(data_points, 'ms', protocol='line')
+        self._end_time = time.time()
+        self.influxdb_write_time_per_message.labels(topic=kafka_topic).set(
+            (self._end_time - self._start_time) / len(data_points))
